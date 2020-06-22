@@ -1,0 +1,152 @@
+
+RedHat 系列 pki 配置位于 /etc/pki 目录下，Debian 系统 pki 配置位于 /etc/ssl 目录下。
+这里以 RedHat EnterPrise 7.5 为例。
+
+RedHat 配置文件路径 /etc/pki/tls/openssl.cnf
+Debian 配置文件路径 /etc/ssl/openssl.cnf
+
+
+RedHat 7.5 下 ca 服务器的搭建
+1. 修改配置文件 /etc/ssl/openssl.cnf
+	...
+	dir             = /etc/pki/CA           # Where everything is kept
+	...
+2. 在 /etc/pki/CA 目录下创建相关目录及文件
+	cd /etc/pki/CA
+	touch index.txt
+	echo 01 > serial
+3. 证书及密钥文件
+	cd /etc/pki/CA
+   1) root ca 密钥文件
+	openssl genrsa -out ./private/cakey.pem 2048
+   2) root ca 证书文件
+	openssl req -new -x509 -subj "/C=CN/ST=ShangHai/L=JingAn/O=Company/OU=Department/CN=CaCert" -key ./private/cakey.pem -days 3650 -out cacert.pem
+
+RedHat 7.5 下进行 subca 证书的签发
+在 /etc/pki/tls 下创建 demoCA 作为操作目录
+	cd /etc/pki/tls/demoCA
+1. 创建目录
+	mkdir csr
+	mkdir certs
+	mkdir private
+2. 创建证书及密钥文件
+   1) sub ca 密钥文件
+	openssl genrsa -out ./private/subca.key.pem
+   2) sub ca 证书签发请求
+	openssl req -new -subj "/C=CN/ST=ShangHai/L=WenShui/O=Company/OU=SubDepart/CN=SubCaCert" -key ./private/subca.key.pem -out ./csr/subca.csr.pem
+   3) sub ca 证书签发
+	openssl ca -in ./csr/subca.csr.pem -out ./certs/subca.cert.pem -days 3650
+
+说明:
+1. 一般来说，rootca 与 subca 不应该在同一台服务器上，这里为方便测试，subca 也在同一台机器上签发。
+实际上， subca 应该由另一台机器生成私钥及 csr 文件，并将后者发给 rootca 服务器进行证书签发。
+2. 下级 ca 在获得上级 ca 签发的证书后，应该放入下级ca服务器中 openssl.cnf 配置中 dir 指定的路径下。
+3. 这里将 subca.cert.pem 和 subca.key.pem 文件分别放置在 openssl.cnf 配置中 dir 指定的路径下，并将名
+称修改为 cacert.pem 和 cakey.pem(与 openssl.cnf 一致)，以便后续服务器证书的签发。
+
+-----------------------------------------------------------------------------------------------------------
+
+为 ngnix 服务签发证书(nginx 服务位于 Debian 机器上)
+暂时不太清楚怎么在 nginx 上配置证书链，所以使用 ca 为服务器签发证书。
+
+创建 rsa 私钥和 csr 文件，交给 ca 服务器(这里是 RedHat 7.5)，由其签发属于服务器的身份证书。
+1. 在 /etc/ssl/demoCA 下创建操作目录
+	mkdir certs
+	mkdir csr
+	mkdir private
+2. 创建证书及 csr 文件
+   1) server 密钥文件
+	openssl genrsa -out ./private/server.nginx.key.pem
+   2) server 证书签发请求
+	openssl req -new -subj "/C=CN/ST=ShangHai/L=JiangChang/O=Company/OU=ServerDepart/CN=10.0.80.121" -key ./private/server.nginx.key.pem -out ./csr/server.nginx.csr.pem
+	注意: CN 项必须是服务网站的 ip 地址或 DNS 域名地址，否则在访问时会出现下列错误:
+		firefox: 警告：面临潜在的安全风险 ...
+		ie: 此网站的安全证书存在问题。...
+   3) 将 server.nginx.csr.pem 发送给 ca 服务器，请求签发证书（此步骤在 ca 服务器下执行）
+	openssl ca -in ./csr/server.nginx.csr.pem -out ./certs/server.nginx.cert.pem -days 3650
+   4) 将生成的 server.nginx.cert.pem 证书放置到 nginx 服务器上(Debian 机器)
+      将 server.nginx.cert.pem 放置在 /etc/ssl/certs 目录下
+	  将 server.nginx.key.pem 放置在 /etc/ssl/private 目录下
+3. nginx 服务器配置
+   1) 修改 nginx.conf 配置，将下面的配置内容取消注释，并填写相应的服务器证书和密钥文件名称
+    # HTTPS server
+    #
+    server {
+       listen       443 ssl;
+       server_name  localhost;
+
+       ssl_certificate      server.nginx.cert.pem;
+       ssl_certificate_key  server.nginx.key.pem;
+
+       ssl_session_cache    shared:SSL:1m;
+       ssl_session_timeout  5m;
+
+       ssl_ciphers  HIGH:!aNULL:!MD5;
+       ssl_prefer_server_ciphers  on;
+
+       location / {
+           root   html;
+           index  index.html index.htm;
+       }
+    }
+   2) 重启 nginx 
+	  nginx -s stop
+	  nginx
+4. windows 浏览器配置
+   如果需要从 windows 上访问浏览器，需要安装 ca 证书，在安装之后要将证书后缀改为 .crt 。
+   之后就可以访问了
+5. 其他
+   1) 执行 nginx -s reload ，重新加载配置启动报下面的错误
+	nginx: [emerg] the "ssl" parameter requires ngx_http_ssl_module in /usr/local/nginx/conf/nginx.conf:99
+   原因: nginx 安装时没有安装该模块。
+   2) 签发证书时报错:
+	...
+	failed to update database
+	TXT_DB error number 2
+	解决: 删除 /etc/pki/CA 下的 index 文件，重新 touch
+
+-----------------------------------------------------------------------------------------------------------
+
+因为要在 windows 环境下使用浏览器访问 nginx 服务，所以需要将 rootca subca 证书安装到 windows 上
+
+windows 环境下安装 rootca 和 subca
+1. 将 cacert.pem 和 subca.cert.pem 导出，将名称分别改为 cacert.crt 和 subca.crt
+2. 点击安装 cacert.crt，在[证书导入向导]中选择<将所有的证书放入下列存储>，点击<浏览>按钮，在[选择证书存储]
+   对话框中选择/受信任的根证书颁发机构/。
+3. 点击安装 subca.crt，在[证书导入向导]中选择<将所有的证书放入下列存储>，点击<浏览>按钮，在[选择证书存储]
+   对话框中选择/中级证书颁发机构/。 
+
+
+-----------------------------------------------------------------------------------------------------------
+
+Debian 8 下 ca 服务器的搭建
+1. 修改配置文件 /etc/ssl/openssl.cnf
+	...
+	dir             = /etc/ssl              # Where everything is kept
+	...
+2. 在 /etc/ssl 目录下创建相关目录及文件
+	cd /etc/ssl
+	mkdir newcerts
+	touch index.txt
+	echo 01 > serial
+3. 证书及密钥文件
+	cd /etc/ssl
+   1) root ca 密钥文件
+	openssl genrsa -out ./private/cakey.pem 2048
+   2) root ca 证书文件
+	openssl req -new -x509 -subj "/C=CN/ST=ShangHai/L=JingAn/O=Company/OU=Department/CN=CaCert" -key ./private/cakey.pem -days 3650 -out cacert.pem
+	
+Debian 8 下进行 subca 证书的签发
+在 /etc/ssl 下创建 demoCA 作为操作目录
+	cd /etc/ssl/demoCA
+1. 创建目录
+	mkdir csr
+	mkdir certs
+	mkdir private
+2. 创建证书及密钥文件
+   1) sub ca 密钥文件
+	openssl genrsa -out ./private/subca.key.pem
+   2) sub ca 证书签发请求
+	openssl req -new -subj "/C=CN/ST=ShangHai/L=WenShui/O=Company/OU=SubDepart/CN=SubCaCert" -key ./private/subca.key.pem -out ./csr/subca.csr.pem
+   3) sub ca 证书签发
+	openssl ca -in ./csr/subca.csr.pem -out ./certs/subca.cert.pem -days 3650

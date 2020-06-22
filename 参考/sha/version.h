@@ -1,0 +1,5 @@
+#define VERSION_MAJOR 1
+#define VERSION_MINOR 0
+#define VERSION_PATCHLEVEL 4
+#define VERSION_STRING "1.0.4"
+#define VERSION_DATE "2003-Jul-25"

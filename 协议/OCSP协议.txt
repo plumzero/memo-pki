@@ -1,0 +1,13 @@
+Alice和Bob使用Ivan颁发的数字证书。该场景中Ivan是数字证书认证中心（CA）；
+
+Alice向Bob发送其由Ivan颁发的数字证书，并发出请求建立连接的申请；
+
+Bob担心Alice的私钥已经泄露，因此向Ivan发送’OCSP request’ 消息并包含Alice的数字证书序列号；
+
+Ivan的OCPS响应端从Bob发送的消息中获取数字证书的序列号，并在CA数据库中查找该数字证书的状态；
+
+Ivan向Bob发送由其私钥加密的消息’OCSP response’，并包含证书状态正常的信息；
+
+由于Bob事先已经安装了Ivan的数字证书，因此Bob使用Ivan的公钥解密消息并获取到Alice的数字证书状态信息；
+
+Bob决定与Alice进行通信

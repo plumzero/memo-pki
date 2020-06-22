@@ -1,0 +1,51 @@
+
+rsa 加解密操作，
+
+rsa 生成证书及私钥
+openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -subj "/C=CN/ST=ZheJiang/L=HangZhou/O=Company/OU=Department" -keyout ca-key.pem -out ca.pem
+
+从私钥中导出 rsa 公钥
+openssl rsa -in ca-key.pem -pubout -out ca-public.pem
+
+事先创建一个文本文件 hello.txt, 输入一些内容，比如 "helloworld"
+touch hello.txt
+echo helloworld >> hello.txt
+
+通过 rsa 公钥对文件加密
+openssl rsautl -encrypt -in hello.txt -inkey ca-public.pem -pubin -out hello.enc.txt
+ 
+通过 rsa 私钥对密文解密
+openssl rsautl -decrypt -in hello.enc.txt -inkey ca-key.pem -out hello.dec.txt
+
+通过 rsa 私钥对文件进行签名，签名存储在 sign.txt 中
+openssl dgst -sign ca-key.pem -sha256 -out sign.txt hello.txt
+
+通过 rsa 公钥对文件进行解签
+openssl dgst -verify ca-public.pem -sha256 -signature sign.txt hello.txt
+
+查看 rsa 公钥结构
+openssl rsa -pubin -text -noout -in ca-public.pem
+
+查看 rsa 私钥结构
+openssl rsa -text -noout -in ca-key.pem
+
+从证书中提取公钥
+openssl x509 -in ca.pem -pubkey -out fd-public.key
+
+从公钥中提取指数 e 和模数 N
+openssl rsa -pubin -text -modulus -in ca-public.pem 
+
+将私钥从 pem 转为 der 格式
+openssl rsa -inform pem -in ca-key.pem -outform der -out ca-key.der
+
+将私钥从 der 转为 pem 格式
+openssl rsa -inform der -in ca-key.der -outform pem -out ca-key.pem
+
+使用公钥进行验签（反解密，获取签名原文）
+openssl rsautl -verify -in sign.txt -inkey ca-public.pem -pubin -out hello.plain.txt -raw
+
+sha256 哈希
+openssl dgst -sha256 -passin plain.txt -out sha256.txt
+
+证书链验证
+把整个证书链合并到一个文件里，赋值给cafile就可以。

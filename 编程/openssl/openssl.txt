@@ -1,0 +1,742 @@
+### OPENSSL 安装 ###
+Debian下编译安装
+	tar -zxvf openssl-1.0.1q.tar.gz
+	cd openssl-1.0.1q
+	./config --prefix=/usr/local/openssl shared zlib 		//对于低版本，默认是不会生成动态库的，需要加上 shared 命令
+	./config -L/usr/local/zlib/lib -I/usr/local/zlib/include -lz --prefix=/usr/local/openssl shared	//openssl的安装需要依赖zlib库，如果需要指定路径，用这个
+	./config -t
+	make install
+安装问题
+	1.perl: warning: Falling back to the standard locale ("C").
+		vim /etc/profile
+			添加 export LC_ALL=C
+	2.openssl: error while loading shared libraries: libssl.so.1.1: cannot open shared object file: No such file or directory
+		vim /etc/ld.so.cache
+			添加 /usr/local/openssl/lib
+		ldconfig
+	3.make时出现问题：make[2]: *** [c_zlib.o] Error 1
+		原因：缺少zlib库，执行如下命令
+			apt-get -f install
+			apt-get install libssl-dev zlib1g-dev libopts25-dev		
+安装设置
+	头文件搜索
+	ln -s /usr/local/openssl/include/openssl /usr/include
+	库文件搜索（如果是动态库，则可以将搜索路径直接写入/etc/ld.so.conf.d/中，而不需要进行下面的链接）
+	ln -s /usr/local/openssl/lib/libcrypto.a /usr/lib/libcrypto.a		//链接库要一个一个的来
+	ln -s /usr/local/openssl/lib/libssl.a /usr/lib/libssl.a
+	
+### 快速命令 ###
+创建 CA
+  openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 -subj "/C=CN/ST=JiangSu/L=NanJing/O=Company/OU=Department" -keyout ca-key.pem -out ca.pem
+	
+### OPENSSL COOKBOOK key csr crt ###
+运行一个支持ssl的web server
+	1.生成一个私钥（密钥算法类型rsa，密钥长度2048位，密钥密码可选）
+	2.产生一个证书签发请求（csr），发送给ca
+	3.安装由ca签发的证书
+1.生成私钥（不同的私钥生成方法可能不同，但对各种私钥的处理方法基本相同）
+	rsa 私钥
+		本地生成私钥 rsa key，私钥默认存放在pem格式文件中
+			openssl genrsa -aes128 -passout pass:1234 -out fd.key 2048
+			aes128是一种密码套件，用于输出之前加密私钥。使用密码套件时需要设置密码短语，设置密码短语的方式有许多，可以参考
+				https://www.openssl.org/docs/manmaster/man1/openssl.html 的 Pass Phrase Options 选项
+			本例中通过 pass:password 格式设置。
+			注：-passout pass:1234 一定要放在 -out 输出之前才能生效；私钥位数 2048 一定要放在最后指定，低于 512 位是不允许的
+		查看 rsa 私钥结构
+			openssl rsa -text -in fd.key -passin pass:1234
+		rsa 私钥中包含公钥，将公钥从私钥中分离输出
+			openssl rsa -in fd.key -pubout -out fd-public.key
+		检测私钥的一致性（只能用于检测私钥）
+			openssl rsa -in fd.key -check
+		去除证书密码
+			openssl rsa -in fd.key -out fd-nopwd.key
+		私钥使用des加密
+			openssl rsa -in fd.key -des3 -out fd-des.key
+		生成无密码私钥密钥
+			openssl genrsa -out fd-nopwd.key 2048
+	dsa 私钥
+		本地生成私钥 dsa key
+			openssl dsaparam -genkey 2048 | openssl dsa -out dsa.key -aes128
+			dsaparam 是处理或产生dsa参数文件的命令，dsa参数生成过程较慢，同样的一套dsa参数可用来生成不同的key
+		查看 dsa 私钥结构
+			openssl dsa -text -in dsa.key
+		dsa 私钥中包含公钥，将公钥从私钥中分离，如果去掉-pubout，会输出私钥
+			openssl dsa -in dsa.key -pubout -out dsa-public.key
+	ecdsa 私钥
+		本地生成私钥 ecdsa key
+			openssl ecparam -genkey -name secp256r1 | openssl ec -out ec.key -aes128
+		查看 ecdsa 私钥结构
+			openssl ec -text -in ec.key
+		ecdsa 私钥中包含公钥，将公钥从私钥中分离，如果去掉-pubout，会输出私钥
+			openssl ec -in ec.key -pubout -out ec-public.key
+	对于OpenSSL 1.0.2，可以使用 genpkey 命令生成各种各样的key，而不需要像上面这样麻烦
+2.生成证书请求文件csr
+	req命令主要用来生成和处理PKCS#10格式的证书请求，此外也能创建用作root CA的自签名证书
+	利用已有私钥生成 csr 文件
+		openssl req -new -key fd.key -out fd.csr
+	校核 csr 文件的签名
+		openssl req -text -in fd.csr -noout -verify
+	使用-newkey选项生成新的私钥及 csr 文件 	-nodes不使用密码短语
+		openssl req -newkey rsa:2048 -keyout fd-new.key -out fd-new.csr -nodes
+	使用-x509选项直接生成自签名证书
+		openssl req -x509 -newkey rsa:2048 -keyout fd-new.key -out fd-new.crt 
+	从csr文件中获取公钥
+		openssl req -in fd.csr -pubkey -out fd-public.key
+	从已存在证书中创建新的csr文件，最好每次都使用新的key
+		openssl x509 -x509toreq -in fd.crt -out fd.csr -signkey fd.key
+	通过配置文件生成 csr 文件
+		openssl req -new -config fd.cnf -key fd.key -out fd.csr
+	配置文件格式在本文档内搜索 csr.cnf
+	注意：产生csr文件时，对于专有名称域(key:value)的输出，如果直接回车会默认key为配置文件中的value，配置中没有此选项则忽略；如果输入 . 后再回车，会直接忽略
+3.使用 csr 文件可生成一张自签名证书，或发送给 ca 请求签发一张身份证书
+	根据 csr 和 key 创建x509身份证书(自签名)	fd.key 也可以换成 fd-private.key，但不能换成 fd-public.key
+		openssl x509 -req -days 365 -in fd.csr -signkey fd.key -out fd.crt
+	只根据 csr 创建一张签名证书（自签名） 手动填写主题项或在命令中直接加入
+		openssl req -new -x509 -days 365 -key fd.key -out fd.crt
+		openssl req -new -x509 -days 365 -key fd.key -out fd.crt \
+				-subj "/C=GB/L=London/O=Feisty Duck Ltd/CN=www.feistyduck.com"
+	创建单张多域名证书（自签名）
+		新建文件fd.ext，向其中写入
+			subjectAltName = DNS:*.feistyduck.com, DNS:feistyduck.com
+		openssl x509 -req -days 365 -in fd.csr -signkey fd.key -out fd.crt -extfile fd.ext
+	检验证书
+		openssl x509 -text -in fd.crt -noout
+	由ca签发的证书会要求很多扩展项
+注：
+	1.Authority Information Access(AIA)扩展项包含两方面信息。
+	一是ca的ocsp响应器地址列表，用于检验证书的实时废止。二是签发者的证书（位于证书链的下一个）。
+	如今，服务器证书很少直接由根证书签发，这导致用户必须在他们的配置中有不少于一张的中间证书。
+	2.Subject Alternative Name扩展项是可选的，如果没有会求助于 Common Name(CN)，它是 Subject 域
+	的一部分。
+### OPENSSL COOKBOOK 密钥和证书的转换 ###
+私钥或证书有多种格式，格式之间可以相互转换。常用格式如下：
+		Binary (DER) certificate
+			raw格式的x509证书，使用DER ASN.1编码
+		ASCII (PEM) certificate(s)
+			base64编码 der 证书，-----BEGIN CERTIFICATE-----打头，-----END CERTIFICATE-----结尾
+		Binary (DER) key
+			raw格式的私钥，使用DER ASN.1编码。OpenSSL创建的key为SSLeay格式，也有可替代但不常用的PKCS#8格式。
+			OpenSSL可以使用pkcs8命令转成或转出PKCS#8格式
+		ASCII (PEM) key
+			base64编码 der 密钥
+		PKCS#7 certificate(s)
+			作为签名或加密后的数据的传输格式，通常以.p7b和.p7c为扩展名。包括所需的整个证书链。此格式用于Java。
+		PKCS#12 (PFX) key and certificate(s)
+			用于存储和保护伴随整个证书链的服务器密钥的格式，通常以.p12和.pfx为扩展名。此格式通常用于Microsoft产
+			品，也用于客户端证书。如今，PFX与PKCS#12同义，后缀名.p12与.pfx同义，PFX是DER格式。
+PEM和DER的转换	PEM是文本格式，DER是二进制格式，可以直接使用 -text 查看PEM格式文件。如果需要查看DER格式文件，还得加上参数 -inform DER
+如果不指定 -outform 会默认和 -inform 指定的格式相同
+	pem -> der
+	openssl x509 -inform PEM -in fd.pem -outform DER -out fd.der
+	der -> pem
+	openssl x509 -inform DER -in fd.der -outform PEM -out fd.pem
+	私钥的转换同样遵循上述语法格式，但RSA keys转换要用rsa命令，DSA keys转换要用dsa命令。转csr文件，要换成req命令。
+PKCS#12(PFX)转换
+	将PEM格式的密钥和证书转换为PKCS#12格式，即生成PKCS#12格式的文件
+	openssl pkcs12 -export -name "My Certificate" -out fd.p12 -inkey fd.key -in fd.crt -certfile fd-chain.crt
+	将PKCS#12格式文件转换为PEM格式，私钥、证书、中间证书都在fd.pem文件中，需手工分离，同时去掉附加的元数据项
+	openssl pkcs12 -in fd.p12 -out fd.pem -nodes
+	命令方式分离key和证书	仍需分别进入分离后的文件去掉元数据
+	openssl pkcs12 -in fd.p12 -nocerts -out fd.key -nodes
+	openssl pkcs12 -in fd.p12 -nokeys -clcerts -out fd.crt
+	openssl pkcs12 -in fd.p12 -nokeys -cacerts -out fd-chain.crt
+	把PKCS#12格式文件转换为PEM格式
+	openssl pkcs12 -in xxx.p12 -out yyy.pem -nodes
+	将 key 和 cert 合成 pfx 格式证书
+	openssl pkcs12 -export -out pre.pfx -inkey pre.key -in pre.crt
+PKCS#7转换
+	pem -> pkcs#7
+	openssl cr12pkcs7 -nocrl -out fd.p7b -certfile fd.crt -certfile fd-chain.crt
+	pkcs#7 -> pem	进入pem文件清除不必要数据
+	openssl pkcs7 -in fd.p7b -print_certs -out fd.pem
+	
+### OPENSSL COOKBOOK 配置 ###
+密码套件选择
+选择所支持的密码套件是tls服务器配置的通常任务，密码套件的选择包括身份认证(Au)、密钥交换(Kx)、对称加密(Enc)和信息摘要(Mac)，
+前面四项分别对应PKI中的数字签名、密钥配送、信息加密和完整校验。
+依赖于OpenSSL的项目当然要采用OpenSSL所能够支持的套件配置。
+在Apache httpd上，密码套件配置如下：
+	SSLHonorCipherOrder On					//启用密码套件
+	SSLCipherSuite "HIGH:!aNULL:@STRENGTH"	//密码套件类型
+
+列出openssl支持的所有套件
+	openssl ciphers -v 'ALL:COMPLEMENTOFALL'
+	信息内容：
+		EXP-EDH-RSA-DES-CBC-SHA SSLv3 Kx=DH(512)  Au=RSA  Enc=DES(40)   Mac=SHA1 export
+		Suite name：						ECDHE-RSA-AES256-GCM-SHA384		密码套件名称
+		Required minimum protocol version：	SSLv3							要求通信最低版本
+		Key exchange algorithm：			Kx=DH(512)						密钥协商算法
+		Authentication algorithm：			Au=RSA							数字签名算法
+		Cipher algorithm and strength：		Enc=DES(40)						对称加密算法
+		MAC (integrity) algorithm：			Mac=SHA1						Mac算法
+		Export suite indicator：			export
+单纯根据顺序来判断密码套件各项是不准确的，比如
+	DH-RSA-AES256-SHA256    TLSv1.2 Kx=DH/RSA   Au=DH   Enc=AES(256)  Mac=SHA256
+	DH-RSA-AES256-SHA256    TLSv1.2 Kx=DH/RSA   Au=DH   Enc=AES(256)  Mac=SHA256
+	ADH-AES256-GCM-SHA384   TLSv1.2 Kx=DH       Au=None Enc=AESGCM(256) Mac=AEAD
+	DES-CBC3-SHA            SSLv3 Kx=RSA      Au=RSA  Enc=3DES(168) Mac=SHA1
+	RC4-MD5                 SSLv3 Kx=RSA      Au=RSA  Enc=RC4(128)  Mac=MD5
+
+列出指定套件
+	openssl ciphers -v 'RC4'
+	openssl ciphers -v 'RC4+SHA'	// + 是取交集
+按某种方式列出套件
+	openssl ciphers -v 'RC4:AES'	// : 是取并集并有序输出，可用空格和逗号代替冒号达到相同效果
+列出所有能够支持且包括不提供加密组件的密码套件
+	openssl ciphers -v 'ALL:eNULL'
+列出所有能够支持但不包括ADH的密码套件，并按强弱排序
+	openssl ciphers -v 'ALL:!ADH:@STRENGTH'
+列出不提供认证组件的密码套件
+	openssl ciphers -v 'aNULL'
+列出包含3DES名称的套件，同时将其中带有RSA名称的套件放在最后
+	openssl ciphers -v '3DES:+RSA'
+列出包含RC4名称但不包括不提供认证组件的密码套件
+	openssl ciphers -v 'RC4:!COMPLEMENTOFDEFAULT'	相当于	openssl ciphers -v "RC4:!aNULL"
+列出包含RSA名称但不包括不提供加密组件的密码套件
+openssl ciphers -v 'RSA:!COMPLEMENTOFALL'	相当于	openssl ciphers -v 'RSA:!eNULL'
+	
+关键字keywords 可以尝试与命令 openssl ciphers -v 'XXX' 一起用
+	Group keywords 选择常用密码套件时的快捷方法
+		Keyword				Meaning
+		DEFAULT				The default cipher list. This is determined at compile time and, as of OpenSSL 1.0.0, 
+							is normally ALL:!aNULL:!eNULL. This must be the first cipher string specified.
+		COMPLEMENTOFDEFAULT	The ciphers included in ALL, but not enabled by default. Currently, this is ADH. Note 
+							that this rule does not cover eNULL, which is not included by ALL (use COMPLEMENTOFALL
+							if necessary).
+		ALL					All cipher suites except the eNULL ciphers, which must be explicitly enabled.
+		COMPLEMENTOFALL		The cipher suites not enabled by ALL, currently eNULL.
+		HIGH				“High”-encryption cipher suites. This currently means those with key lengths larger than 
+							128 bits, and some cipher suites with 128-bit keys.
+		MEDIUM				“Medium”-encryption cipher suites, currently some of those using 128-bit encryption.
+		LOW					“Low”-encryption cipher suites, currently those using 64- or 56-bit encryption algorithms, 
+							but excluding export cipher suites. Insecure.
+		EXP, EXPORT			Export encryption algorithms. Including 40- and 56-bit algorithms. Insecure.
+		EXPORT40			40-bit export encryption algorithms. Insecure.
+		EXPORT56			56-bit export encryption algorithms. Insecure.
+		TLSv1, SSLv3, SSLv2	TLS 1.0, SSL 3, or SSL 2 cipher suites, respectively.
+	Digest keywords 用于选择特定校验算法的密码套件
+		Keyword				Meaning
+		MD5					Cipher suites using MD5. Obsolete and insecure.
+		SHA, SHA1			Cipher suites using SHA1.
+		SHA256 (v1.0.0+)	Cipher suites using SHA256.
+		SHA384 (v1.0.0+)	Cipher suites using SHA384.
+	Authentication keywords 用于选择何种认证方法套件 事实上所有的公共证书都使用rsa算法进行认证
+		Keyword				Meaning
+		aDH					Cipher suites effectively using DH authentication, i.e., the certificates carry DH keys. (v1.0.2+)
+		aDSS, DSS			Cipher suites using DSS authentication, i.e., the certificates carry DSS keys.
+		aECDH (v1.0.0+)		Cipher suites that use ECDH authentication.
+		aECDSA (v1.0.0+)	Cipher suites that use ECDSA authentication.
+		aNULL				Cipher suites offering no authentication. This is currently the anonymous DH algorithms. Insecure.
+		aRSA				Cipher suites using RSA authentication, i.e., the certificates carry RSA keys.
+		PSK					Cipher suites using PSK (Pre-Shared Key) authentication.
+		SRP					Cipher suites using SRP (Secure Remote Password) authentication.
+	Key exchange keywords 用于选择密钥交换算法套件
+		Keyword				Meaning
+		ADH					Anonymous DH cipher suites. Insecure.
+		AECDH (v1.0.0+)		Anonymous ECDH cipher suites. Insecure.
+		DH					Cipher suites using DH (includes ephemeral and anonymous DH).
+		ECDH (v1.0.0+)		Cipher suites using ECDH (includes ephemeral and anonymous ECDH).
+		EDH (v1.0.0+)		Cipher suites using ephemeral DH key agreement.
+		EECDH (v1.0.0+)		Cipher suites using ephemeral ECDH.
+		kECDH (v1.0.0+)		Cipher suites using ECDH key agreement.
+		kEDH				Cipher suites using ephemeral DH key agreements (includes anonymous DH).
+		kEECDH (v1.0.0+)	Cipher suites using ephemeral ECDH key agreement (includes anonymous ECDH).
+		kRSA, RSA			Cipher suites using RSA key exchange.
+	Cipher keywords 用于选择密码套件
+		Keyword				Meaning
+		3DES				Cipher suites using triple DES. Obsolete and insecure.
+		AES					Cipher suites using AES.
+		AESGCM (v1.0.0+)	Cipher suites using AES GCM.
+		CAMELLIA			Cipher suites using Camellia. Obsolete.
+		DES					Cipher suites using single DES. Obsolete and insecure.
+		eNULL, NULL			Cipher suites that don’t use encryption. Insecure.
+		IDEA				Cipher suites using IDEA. Obsolete.
+		RC2					Cipher suites using RC2. Obsolete and insecure.
+		RC4					Cipher suites using RC4. Insecure.
+		SEED				Cipher suites using SEED. Obsolete.
+	Miscellaneous keywords
+		Keyword				Meaning
+		@STRENGTH			Sorts the current cipher suite list in order of encryption algorithm key length.
+		aGOST				Cipher suites using GOST R 34.10 (either 2001 or 94) for authentication. Requires a GOST-capable engine.
+		aGOST01				Cipher suites using GOST R 34.10-2001 authentication.
+		aGOST94				Cipher suites using GOST R 34.10-94 authentication. Obsolete. Use GOST R 34.10-2001 instead.
+		kGOST				Cipher suites using VKO 34.10 key exchange, specified in RFC 4357.
+		GOST94				Cipher suites using HMAC based on GOST R 34.11-94.
+		GOST89MAC			Cipher suites using GOST 28147-89 MAC instead of HMAC.
+
+关键字调节器	部分测试命令返回不合预期
+	Append 					默认
+	Delete(-)				删除A关键字匹配项，如果另外调用B关键字，其显示行若有A关键字，依旧显示
+	Permanently delete(!)	永久删除A关键字匹配项，如果另外调用B关键字，其显示行若有A关键字，不再显示
+	Move to the end(+)		将匹配项移至列表尾，只用于已存在套件，不要使用此命令将新套件加入列表
+
+排序
+	密码套件强度降序排序
+		openssl ciphers -v 'DES-CBC-SHA DES-CBC3-SHA RC4-SHA AES256-SHA @STRENGTH'
+如何进行安全又有效率的配置
+	1.使用高于128位的密码套件
+	2.使用提供强力认证的密码套件
+	3.不使用依赖于 weak primitive 的密码套件，如MD5
+	4.无论使用何种密钥或协议，都对前向保密性提供有力支持
+	5.对于TLS1.2客户端，最好使用AES GCM套件
+	6.RC4是弱的，将它放在列表尾
+	7.最好的办法是将弱套件从展示列表中永远清除
+		使用下列关键字辨别弱套件
+			aNULL; 	no authentication
+			eNULL; 	no encryption
+			LOW; 	low-strength suites
+			3DES; 	effective strength of 108 bits
+			MD5; 	suites that use MD5
+			EXP; 	obsolete export suites
+	8.可以不考虑使用的套件
+		DSA、PSK、SRP、ECDH	很少使用
+		IDEA、SEED			被废弃了
+		CAMELLIA			慢且不支持AES算法（如GCM或ECDHE）
+		命令执行
+			openssl ciphers -v '!aNULL !eNULL !LOW !3DES !MD5 !EXP !DSS !PSK !SRP !kECDH !CAMELLIA !IDEA !SEED'
+		前向保密性是最先选择（ECDH和EDH是我们的最先选择）
+			openssl ciphers -v 'kEECDH kEDH !aNULL !eNULL !LOW !3DES !MD5 !EXP !DSS !PSK !SRP !kECDH !CAMELLIA !IDEA !SEED'
+		想要的提前（这里将ECDSA提前）
+			openssl ciphers -v 'kEECDH+ECDSA kEECDH kEDH !aNULL !eNULL !LOW !3DES !MD5 !EXP !DSS !PSK !SRP !kECDH !CAMELLIA !IDEA !SEED'
+	9.将旧套件放到列表尾 TLS
+		openssl ciphers -v 'kEECDH+ECDSA kEECDH kEDH +SHA !aNULL !eNULL !LOW !3DES !MD5 !EXP !DSS !PSK !SRP !kECDH !CAMELLIA !IDEA !SEED'
+	10.复杂的一个
+		openssl ciphers -v 'kEECDH+ECDSA kEECDH kEDH HIGH +SHA +RC4 RC4 !aNULL !eNULL !LOW !3DES !MD5 !EXP !DSS !PSK !SRP !kECDH !CAMELLIA !IDEA !SEED'
+
+### OPENSSL COOKBOOK 性能 ###		
+测试几种算法的速度
+	openssl speed rc4 aes rsa ecdh sha
+双核（非线程）测试rsa算法的速度
+	openssl speed -multi 2 rsa
+开启硬件加速
+	openssl speed aes-128-cbc
+	
+### OPENSSL COOKBOOK 创建私有CA ###
+虽然是私有CA，但在结构上与公共CA相似。
+CA由一个 root CA 及其衍生的 sub CAs 构成。
+经由 CRLs 和 OCSP 响应器发布废止信息。
+CA 必须离线，为此 OCSP 响应器需要有一个自己的身份。
+对sub CAs 的发证范围有限制。 
+设置完成后根证书会安全地分发给客户端。
+
+创建 Root CA
+有如下几个步骤
+1.Root CA 配置 	man config
+	root-ca.conf as follows
+	# ca 的基本信息
+	[default]
+	name				=	root-ca
+	domain_suffix		=	example.com
+	aia_url				=	http://$name.$domain_suffix/$name.crt
+	crl_url				=	http://$name.$domain_suffix/$name.crt
+	ocsp_url			=	http://ocsp.$name.$domain_suffix:9080
+	default_ca			=	ca_default
+	name_opt			=	utf8,esc_ctrl,multiline,lname,align
+	[ca_dn]
+	countryName			=	"GB"
+	organizationName	=	"Example"
+	commonName			=	"Root CA"
+	# 控制 ca 的操作 更多配置信息man ca
+	[ca_default]
+	home				=	.
+	database			=	$home/db/index
+	serial				=	$home/db/serial
+	crlnumber			=	$home/db/crlnumber
+	certificate			=	$home/$name.crt
+	private_key			=	$home/private/$name.key
+	RANDFILE			=	$home/private/random
+	new_certs_dir		=	$home/certs
+	unique_subject		=	no
+	copy_extensions		=	none
+	default_days		=	3650
+	default_crl_days	=	365
+	default_md			=	sha256
+	policy				=	policy_c_o_match
+	[policy_c_o_match]
+	countryName			=	match
+	stateOrProvinceName	=	optional
+	organizationName	=	match
+	organizationalUnitName	=	optional
+	commonName			=	supplied
+	emailAddress		=	optional
+	# req 命令的配置 
+	# 仅在创建自签名根证书时使用一次，ca_ext项最重要 basicConstraints 指明此证书是一个CA证书
+	[req]
+	default_bits		=	4096
+	encrypt_key			=	yes
+	default_md			=	sha256
+	utf8				=	yes
+	string_mask			=	utf8only
+	prompt				=	no
+	distinguished_name	=	ca_dn
+	req_extensions		=	ca_ext
+	[ca_ext]
+	basicConstraints	=	critical,CA:true
+	keyUsage			=	critical,keyCertSign,cRLSign
+	subjectKeyIdentifier=	hash
+	# 用于由Root CA下发的次级证书的构造期间的信息配置，限制次级证书的应用范围
+	[sub_ca_ext]
+	authorityInfoAccess	=	@issuer_info
+	authorityKeyIdentifier	=	keyid:always
+	basicConstraints		=	critical,CA:true,pathlen:0
+	crlDistributionPoints	=	@crl_info
+	extendedKeyUsage		=	clientAuth,serverAuth
+	keyUsage				=	critical,keyCertSign,CRLSign
+	nameConstraints			=	@name_constraints
+	subjectKeyIdentifier	=	hash
+	[crl_info]
+	URI.0					=	$crl_url
+	[issuer_info]
+	caIssuers;URI.0			=	$aia_url
+	OCSP;URI.0				=	$ocsp_url
+	[name_constraints]
+	permitted;DNS.0			=	example.com
+	permitted;DNS.0			=	example.org
+	excluded;IP.0			=	0.0.0.0/0.0.0.0
+	excluded;IP.1			=	0:0:0:0:0:0:0:0/0:0:0:0:0:0:0:0
+	# 用作 CA证书 的 OCSP 响应签名的扩展项信息
+	# 为了能够运行 CA 的 OCSP 响应，在此生成一个特殊的证书，由它代理 OCSP 响应。此证书不是 CA。
+	[ocsp_ext]
+	authorityKeyIdentifier	=	keyid:always
+	basicConstraints		=	critical,CA:false
+	extendedKeyUsage		=	OCSPSigning
+	keyUsage				=	critical,digitalSignature
+	subjectKeyIdentifier	=	hash
+2.创建 ca 目录结构并初始化一些关键文件
+	mkdir root-ca
+	cd root-ca
+	mkdir certs db private
+	chmod 700 private
+	touch db/index
+	openssl rand -hex 16 > db/serial
+	echo 1001 > db/crlnumber
+	说明：
+		certs/		证书存储，所有新发布的证书会放在这里
+		db/			crlnumber-crl号  index-存储所有新发布证书的状态  serial-下一张要发布的证书的序列号
+					此外，OpenSSL也会在 db 中创建一些需要的附加文件
+		private/	存储 ca 的私钥和 ocsp 响应的私钥
+3.创建 root ca
+	分两步，第一步创建私钥和csr，执行如下命令
+		openssl req -new -config root-ca.conf -out root-ca.csr -keyout private/root-ca.key
+	第二步，创建自签名证书
+		openssl ca -selfsign -config root-ca.conf -in root-ca.csr -out root-ca.crt -extensions ca_ext
+		一旦证书创建成功，在 db/index 文件中会立刻添加一行下列格式行
+			V    240706115345Z        1001    unknown    /C=GB/O=Example/CN=Root CA
+		含义是：
+			    Status flag (V for valid, R for revoked, E for expired)
+				Expiration date (in YYMMDDHHMMSSZ format)
+				Revocation date or empty if not revoked
+				Serial number (hexadecimal)
+				File location or unknown if not known
+				Distinguished name
+4.对 ca 的操作
+	从创建的 ca 中生成一个crl
+		openssl ca -gencrl -config root-ca.conf -out root-ca.crl
+	从配置中生成一个不是 ca 的 sub-ca 证书
+		openssl ca -config root-ca.conf -in sub-ca.csr -out sub-ca.crt -extensions sub_ca_ext
+		很明显，上面这条命令不能创建成功，因为在这之前并没有生成 sub-ca.csr，如下命令生成 sub-ca.csr
+		openssl req -new -config root-ca.conf -out sub-ca.csr -extensions sub_ca_ext
+		openssl ca -config root-ca.conf -in sub-ca.csr -out sub-ca.crt
+		上面两条命令是自己想的，未必正确
+	撤销证书
+		openssl ca -config root-ca.conf -revoke certs/xxx.pem -crl_reason keyCompromise
+		-crl_reason 后面可以跟：unspecified,keyCompromise,CACompromise,affiliationChanged,superseded,
+		cessationOfOperation,certificateHold,removeFromCRL
+5.创建 ocsp 签发证书	sub-ca 创建 ocsp 响应，向 ca 请求签发一张证书
+	分两步，第一步，为 ocsp 响应器创建 key 和 csr，这里只为非ca证书做，故不指定配置文件
+		openssl req -new -newkey rsa:2048 -subj "/C=GB/O=Example/CN=OCSP Root Responder" -keyout private/root-ocsp.key -out root-ocsp.csr
+	第二步，使用 root ca 发布证书。-extensions 指定 ocsp_ext ,确保与 ocsp 响应相合。这里将 ocsp 证书有效期缩短至 30 天，因为它们无法被撤销。
+		openssl ca -config root-ca.conf -in root-ocsp.csr -out root-ocsp.crt -extensions ocsp_ext -days 30
+	测试时，可以与 root ca 在同一台机器上，但在生产时， ocsp responder key 和 证书 必须与 root ca 分开  下面两条命令均未执行成功
+		openssl ocsp -port 9080 -index db/index -rsigner root-ocsp.crt -rkey private/root-ocsp.key -CA root-ca.crt -text
+		openssl ocsp -issuer root-ca.crt -CAfile root-ca.crt -cert root-ocsp.crt -url http://127.0.0.1
+
+### OPENSSL COOKBOOK 创建次级CA ###
+
+[...]为称为一个section，称为节
+### csr.cnf 配置文件格式一 ###	
+[req]
+prompt = no
+distinguished_name = dn
+req_extensions = ext
+input_password = 1234
+[dn]
+C = ZG
+ST = JiangSu
+L = NanJing
+O = XianAn
+OU = coder
+CN = LiBei
+emailAddress = ytmrlimei@163.com
+[ext]
+subjectAltName = DNS:www.xxx.com, DNS:www.com
+
+### csr.cnf 配置文件格式二 ###
+## 主配节格式 ##
+[req]
+default_bits           = 2048							//可以被 -newkey 重写
+default_keyfile        = privkey.pem					//可以被 -keyout 重写
+distinguished_name     = req_distinguished_name			//指定专有名称域节
+attributes             = req_attributes					//指定csr属性节
+req_extensions         = v3_ca							//指定csr扩展项节，可以被 -reqexts 重写，可参考 https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
+x509_extensions		   = ...							//指定x509证书扩展项节，可以被 -extensions 重写
+## 专有名称域节格式 ##
+[req_distinguished_name]
+C					   = ZG
+ST					   = JiangSu
+L					   = NanJing
+O					   = XianAn
+OU					   = coder
+CN					   = LiBei
+emailAddress		   = myemail@me.com
+
+countryName            = Country Name (2 letter code)
+countryName_default    = AU
+countryName_min        = 2
+countryName_max        = 2
+
+localityName           = Locality Name (eg, city)
+organizationalUnitName = Organizational Unit Name (eg, section)
+commonName             = Common Name (eg, YOUR name)
+commonName_max         = 64
+emailAddress           = Email Address
+emailAddress_max       = 40
+
+## csr属性节格式，格式与专有名称域节格式相同 ##
+[ req_attributes ]
+challengePassword              = A challenge password
+challengePassword_min          = 4
+challengePassword_max          = 20
+
+
+###  openssl一些命令及项（未测，前面有的就不说） ###
+genrsa 		-	生成rsa私钥
+rsa			-	rsa私钥处理工具(展示、转换)
+
+openssl x509
+	-pubkey			输出PEM格式证书的SubjectPublicKeyInfo
+	-serial			输出证书序列号
+	-dates			打印证书有效期
+	-fingerprint	输出证书指纹
+	
+	https://blog.csdn.net/f2004/article/details/45842287
+	http://apetec.com/support/GenerateSAN-CSR.htm
+	
+分析 openssl asn1parse -in fd.csr -i 的执行结果
+    0:d=0  hl=4 l= 743 cons: SEQUENCE          
+    4:d=1  hl=4 l= 463 cons:  SEQUENCE          
+    8:d=2  hl=2 l=   1 prim:   INTEGER           :00
+   11:d=2  hl=2 l= 120 cons:   SEQUENCE          
+   13:d=3  hl=2 l=  11 cons:    SET               
+   15:d=4  hl=2 l=   9 cons:     SEQUENCE          
+   17:d=5  hl=2 l=   3 prim:      OBJECT            :countryName
+   22:d=5  hl=2 l=   2 prim:      PRINTABLESTRING   :VN
+   26:d=3  hl=2 l=  16 cons:    SET               
+   28:d=4  hl=2 l=  14 cons:     SEQUENCE          
+   30:d=5  hl=2 l=   3 prim:      OBJECT            :stateOrProvinceName
+   35:d=5  hl=2 l=   7 prim:      UTF8STRING        :JiangSu
+   44:d=3  hl=2 l=  16 cons:    SET               
+   46:d=4  hl=2 l=  14 cons:     SEQUENCE          
+   48:d=5  hl=2 l=   3 prim:      OBJECT            :localityName
+   53:d=5  hl=2 l=   7 prim:      UTF8STRING        :NanJing
+   62:d=3  hl=2 l=  13 cons:    SET               
+   64:d=4  hl=2 l=  11 cons:     SEQUENCE          
+   66:d=5  hl=2 l=   3 prim:      OBJECT            :organizationName
+   71:d=5  hl=2 l=   4 prim:      UTF8STRING        :Syan
+   77:d=3  hl=2 l=  13 cons:    SET               
+   79:d=4  hl=2 l=  11 cons:     SEQUENCE          
+   81:d=5  hl=2 l=   3 prim:      OBJECT            :organizationalUnitName
+   86:d=5  hl=2 l=   4 prim:      UTF8STRING        :Code
+   92:d=3  hl=2 l=  12 cons:    SET               
+   94:d=4  hl=2 l=  10 cons:     SEQUENCE          
+   96:d=5  hl=2 l=   3 prim:      OBJECT            :commonName
+  101:d=5  hl=2 l=   3 prim:      UTF8STRING        :Lib
+  106:d=3  hl=2 l=  25 cons:    SET               
+  108:d=4  hl=2 l=  23 cons:     SEQUENCE          
+  110:d=5  hl=2 l=   9 prim:      OBJECT            :emailAddress
+  121:d=5  hl=2 l=  10 prim:      IA5STRING         :123@11.com
+  133:d=2  hl=4 l= 290 cons:   SEQUENCE          
+  137:d=3  hl=2 l=  13 cons:    SEQUENCE          
+  139:d=4  hl=2 l=   9 prim:     OBJECT            :rsaEncryption
+  150:d=4  hl=2 l=   0 prim:     NULL              
+  152:d=3  hl=4 l= 271 prim:    BIT STRING        
+  427:d=2  hl=2 l=  42 cons:   cont [ 0 ]        
+  429:d=3  hl=2 l=  19 cons:    SEQUENCE          
+  431:d=4  hl=2 l=   9 prim:     OBJECT            :unstructuredName
+  442:d=4  hl=2 l=   6 cons:     SET               
+  444:d=5  hl=2 l=   4 prim:      UTF8STRING        :1234
+  450:d=3  hl=2 l=  19 cons:    SEQUENCE          
+  452:d=4  hl=2 l=   9 prim:     OBJECT            :challengePassword
+  463:d=4  hl=2 l=   6 cons:     SET               
+  465:d=5  hl=2 l=   4 prim:      UTF8STRING        :1234
+  471:d=1  hl=2 l=  13 cons:  SEQUENCE          
+  473:d=2  hl=2 l=   9 prim:   OBJECT            :sha256WithRSAEncryption
+  484:d=2  hl=2 l=   0 prim:   NULL              
+  486:d=1  hl=4 l= 257 prim:  BIT STRING
+
+偏移值:本行深度		报头长度	内容长度	内容类型
+	 0:d=0  		hl=4 		l= 743 		cons: SEQUENCE
+prim	基础类型
+cons	构造类型
+	SEQUENCE	序列
+	SET			集合
+偏移值的使用
+	openssl asn1parse -in fd.csr -i -strparse offset
+偏移值，报头长度，内容长度的关系
+	下行偏移值 = 本行报头长度 + (本行内容类型!=cons) ? 本行内容长度 : 0
+写成json的形式
+0	1	2	3	4	5		d参数 对准
+SEQUENCE:{
+	SEQUENCE:{
+		INTEGER:00
+		SEQUENCE:{
+			SET:{
+				SEQUENCE:{
+					OBJECT:countryName
+					PRINTABLESTRING:VN
+				}
+			}
+			SET:{
+				SEQUENCE:{
+					OBJECT:stateOrProvinceName
+					UTF8STRING:JiangSu
+				}
+			}
+			SET:{
+				SEQUENCE:{
+					OBJECT:localityName
+					UTF8STRING:NanJing
+				}
+			}
+			SET:{
+				SEQUENCE:{
+					OBJECT:organizationName
+					UTF8STRING:Syan
+				}
+			}
+			SET:{
+				SEQUENCE:{
+					OBJECT:organizationalUnitName
+					UTF8STRING:Code
+				}
+			}
+			SET:{
+				SEQUENCE:{
+					OBJECT:commonName
+					UTF8STRING:Lib
+				}
+			}
+			SET:{
+				SEQUENCE:{
+					OBJECT:emailAddress
+					IA5STRING:123@11.com
+				}
+			}
+		}
+		SEQUENCE:{
+			SEQUENCE:{
+				OBJECT:rsaEncryption
+				NULL
+			}
+			BIT STRING
+		}
+		cont [0]:{
+			SEQUENCE:{
+				OBJECT:unstructuredName
+				SET:{
+					UTF8STRING:1234
+				}
+			}
+			SEQUENCE:{
+				OBJECT:challengePassword
+				SET:{
+					UTF8STRING:1234
+				}
+			}
+		}
+	}
+	SEQUENCE:{
+		OBJECT:sha256WithRSAEncryption
+		NULL:
+	}
+	BIT STRING
+}	
+0	1	2	3	4	5
+	
+
+//将标准错误输出重定向到标准输出，之后标准输出从空设备文件获得输入，即清空标准输出
+openssl s_client -connect wikipedia.org:443 2>&1</dev/null | sed -n '/-----BEGIN/,/-------END/p'
+
+DEK-Info 域
+位于密钥文件中紧随标头之后，如下：
+	-----BEGIN RSA PRIVATE KEY-----
+	Proc-Type: 4,ENCRYPTED
+	DEK-Info: AES-128-CBC,D1A203F44B5CA9A17680FF9DDBE298F0
+
+	3AEf+ttNr39lKM9qH7jcG0+w5w/9l63Jttj7soiA9YvKAlOwxEXxc08JqXdyCbh3
+	PqyRJouu9R4flwR14B2Smq3nHaAFehbd2EBpOR0DIXU2v+fHRBX/xj+4S5z2Hg22
+	p2s4J6Gnuu7XwkSppppLzuJj+5SlvFEye8mqQR9dDlI3kJNWcJIjoJrpJxjxAC+Q
+	BHhAdZNfbPR7C0KJX7uUDoV0ELITsfCc6TJZ+10PR30bxwbQQx9s6uDU1dvJNc8d
+	aYKaAHBvmC/VSe+D/fbXfaPYXWSIfTJdAirLGCLK1sdWZgT9f7u3f1tLvZ7OQG5L
+	uercdVetuS7ZVRKadI/zUdxZnP01lRTZ1q2TIYz7cAOnGEU+Bdked8ao+TDGDbo4
+	iEgd7Pa7oz5MqD+UPdLRXoB3EjSU4E/lDQiQFh8iA+QOON2QqvM6t1QhXWqO/xtE
+	uP1xlF7HK0xEMe0cVov829WnNNaJo86px1+PbCA2a1E1ZScYg31BWer0SXgmbxHV
+	gkDHkLT7/Kol3C7rnVCbuEJUCIAoIqDaazJLBN76NTdI8tNaxrnaQB/gDWZdznNj
+	0GLsJHHnVhmyTqxHedReAvTI+3KAkTMzqI677bY1udLsWW7A/Fuy5Ct3s/x6v7Hg
+	Ecr2pnazrNNqwdGTeTLuaU/5EaIvjctMTpC6XtgYv4kfctus1E8604PsmT0sR0Q1
+	XiWgtyRQC1N2NzEtwxZUhmFHT/OjNC7kuVppINmteUokzuAQ7pE5gFaY/aJsebsx
+	DfLHednP9ZIU5HQTgzgUhO/3SAzqjIce/0rutdYq87OLMe1QuS3hG3gu7ckcsng2
+	BKaq9IoB6ENraArHRqIpDCJcIANYGio/p+msW2yMQmpE/UtSnH8x5K3UXMzFnWka
+	6aOH9wYOvvwaY2mxzycNZENtNuwetTdXY/H3cF/fgYDUvnN6X6y3Tz1Hh0l59JGK
+	j8DsFi6SspYed3Gy21F1GdhEShJejVb4O7z8NhleSBr5kmr6L7/RaV7POIoJ443I
+	xNvPyT7I5PmW88z5hW0qYwyqbjWsH8E2boVIdFv2oXoO4Uv/RBnWHNFJq2oLmPYO
+	KYjRqd4vUmO6HEVBXIfIAr5JLWvCyyvHdNj8U5fVUhlB6fcZW0yohQFP2WDhKcMz
+	t05ynfjuk4W9jj/b++yO+hwP+M5zhJ3lrcyV8euk1l7YGHvhnqjGSF5ImWkDNzny
+	eFjQa/DVRlRv0MUFe71/XEoowNm9N0hA8ALuSDNLkX4piNsmFMH+Br98LqRLlbxZ
+	X/1rBsX01PrJCRdU+oug++/f3GFaq9ctIQIldgM8ioMHgsQos4hv5GQWg8U/QWwe
+	b15oys2pnPKnIxDKaelpX5ewJ4Tiqhr1G4HnV5kId5G3mkEkBFqWdMse7BkSL4Rb
+	iRhKKDKrhPWWZNNkUXvTwRgIdLziG8tMKLG9zxJQLreq8oagSokbNxVh/bAZaS6z
+	u8RgJuXEf+IbgyGqoyYfSvAt8NR2c36TdDNtr5vyVBMWj25cyQataFArA72FVUEQ
+	x5PAZJiMKgQlF1GJG7zrA5rbOpudNtykq0WfWEE6VBhA645qMhSLwnEaG6QN1INm
+	-----END RSA PRIVATE KEY-----
+DEK-Info域携带两个参数，参数之间以逗号分隔，每一个参数指明加密算法和加密模式，第二个参数指明加密算法
+和加密模式所需要的密码参数（如，IVs）。
+适应的加密算法，加密模式和对应的密码参数及模式在 RFC 1423 中定义。
+在上例中，AES-128-CBC指明了加密算法及加密模式，D1A203F44B5CA9A17680FF9DDBE298F0是初始化向量
+
+在一张公钥证书中，其签名算法的oid（即 AlgorithmIdentifier 类型的 algorithm 参数）名称及说明如下：
+	名称						说明
+	md2WithRSAEncryption		RSA with MD2	//使用 MD2 算法对数据哈希，之后使用 RSA 算法对哈希进行签名
+	md4WithRSAEncryption		RSA with MD4
+	md5WithRSAEncryption		RSA with MD5
+	sha-1WithRSAEncryption		RSA with SHA1
+	sha224WithRSAEncryption		RSA with SHA224
+	sha256WithRSAEncryption		RSA with SHA256
+	sha384WithRSAEncryption		RSA with SHA384
+	sha512WithRSAEncryption		RSA with SHA512
+	ecdsa-with-SHA1				ECDSA with SHA1
+	ecdsa-with-SHA224			ECDSA with SHA224
+	ecdsa-with-SHA256			ECDSA with SHA256
+	ecdsa-with-SHA384			ECDSA with SHA384
+	ecdsa-with-SHA512			ECDSA with SHA512
+
+在一张公钥证书中，其公钥类型的oid（即 AlgorithmIdentifier 类型的 algorithm 参数）名称及说明如下：
+	名称						说明
+	rsaEncryption				RSA
+	id-ecPublicKey				Generic EC key
+	id-ecDH						EC key for ECDH
+
+使用 openssl asn1parse 对一张公钥证书进行解析时，并不能显示其公钥 (BIT STRING处)
+
+X509证书 v2 或 v3 版本才有 颁发者唯一标识(issuerUniqueID) 和 主题者唯一标识(subjectUniqueID)；
+只有 v3 版本才有 扩展项(extensions)
+ 
+PKCS7 用于证书发布、证书吊销列表、及证书
+PEM 格式转 PKCS7 格式
+	openssl crl2pkcs7 -nocrl -out cert.p7 -certfile cert.pem
+解析 PKCS7 格式文件
+	openssl asn1parse -in cert.p7 -i
+查看 PKCS7 文件内容
+	openssl pkcs7 -text -noout -print_certs -in cert.p7
+将 PKCS7 转为 PEM 格式
+	openssl pkcs7 -print_certs -in cert.p7 -out new_cert.pem
